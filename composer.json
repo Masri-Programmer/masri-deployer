@@ -1,0 +1,25 @@
+{
+  "name": "masri/deployer",
+  "description": "Automated deployment scripts for Masri projects",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Masri",
+      "email": "you@example.com"
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "Masri\\Deployer\\": "src/"
+    }
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Masri\\Deployer\\DeployerServiceProvider"
+      ]
+    }
+  },
+  "require": {}
+}
