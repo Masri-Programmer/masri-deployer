@@ -8,6 +8,7 @@ REMOTE_HOST="{{REMOTE_HOST}}"
 REMOTE_APP_PATH="{{REMOTE_APP_PATH}}"
 REMOTE_DEPLOY_SCRIPT="${REMOTE_APP_PATH}/deploy.sh"
 SSR_PROCESS="{{SSR_PROCESS}}"
+TRANSLATION_KEY="{{TRANSLATION_KEY}}"
 
 # Detect if we are on Windows (Git Bash) or Linux/Mac for PHP
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
@@ -73,7 +74,11 @@ if [ "$BUMP" != "none" ]; then
 fi
 
 echo "🌍 Syncing Translations Locally..."
-"$LOCAL_PHP_BIN" artisan translate:local --all || echo "⚠️ Translation command skipped (not found)"
+if [ -z "$TRANSLATION_KEY" ]; then
+    "$LOCAL_PHP_BIN" artisan translate:local --all || echo "⚠️ Translation command skipped (not found)"
+else
+    "$LOCAL_PHP_BIN" artisan translate:local --all --key="$TRANSLATION_KEY" || echo "⚠️ Translation command skipped (not found)"
+fi
 
 echo "🛠️  Building Assets (SSR Mode)..."
 export NODE_OPTIONS="--max-old-space-size=4096"

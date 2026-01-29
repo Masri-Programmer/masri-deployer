@@ -24,12 +24,15 @@ class InitDeployment extends Command
 
         $ssrProcess = $this->ask('PM2 Process Name', "$defaultApp-ssr");
 
+        $translationKey = $this->ask('Translation API Key (leave empty if none)', '');
+
         // 2. Process Files
         $this->generateFile('ship.stub', 'ship.sh', [
             '{{REMOTE_USER}}' => $remoteUser,
             '{{REMOTE_HOST}}' => $remoteHost,
             '{{REMOTE_APP_PATH}}' => $remotePath,
             '{{SSR_PROCESS}}' => $ssrProcess,
+            '{{TRANSLATION_KEY}}' => $translationKey,
         ]);
 
         $this->generateFile('deploy.stub', 'deploy.sh', [
