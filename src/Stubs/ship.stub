@@ -82,7 +82,7 @@ fi
 
 echo "🛠️  Building Assets (SSR Mode)..."
 export NODE_OPTIONS="--max-old-space-size=4096"
-npm run build
+npm run build:ssr
 
 echo "🛡️  Backing up remote assets..."
 ssh "${REMOTE_USER}@${REMOTE_HOST}" "
