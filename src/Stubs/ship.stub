@@ -9,6 +9,8 @@ REMOTE_APP_PATH="{{REMOTE_APP_PATH}}"
 REMOTE_DEPLOY_SCRIPT="${REMOTE_APP_PATH}/deploy.sh"
 SSR_PROCESS="{{SSR_PROCESS}}"
 TRANSLATION_KEY="{{TRANSLATION_KEY}}"
+PM2_PATH="{{PM2_PATH}}" 
+if [ "$PM2_PATH" == "{{PM2_PATH}}" ]; then PM2_PATH="pm2"; fi
 
 # Detect if we are on Windows (Git Bash) or Linux/Mac for PHP
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
@@ -19,14 +21,14 @@ else
 fi
 
 # --- MODE: STATUS CHECK ---
+# Run this if the user types: ./ship.sh status
 if [ "$1" == "status" ]; then
     echo "🔍 Checking Remote Server Status..."
     echo "---------------------------------------------------"
+    
     ssh "${REMOTE_USER}@${REMOTE_HOST}" "
         echo '📊 PM2 Process Status:'
-        # Uberspace specific: Use standard path or localized bin
-        pm2 list | grep \"$SSR_PROCESS\" || echo '❌ SSR Process NOT FOUND'
-        
+        $PM2_PATH list | grep '$SSR_PROCESS' || echo '❌ SSR Process NOT FOUND'
         echo ''
         echo '🛠️  Laravel Maintenance Mode:'
         if [ -f ${REMOTE_APP_PATH}/storage/framework/down ]; then
@@ -43,95 +45,115 @@ if [ "$1" == "status" ]; then
     exit 0
 fi
 
-# --- SAFETY MECHANISM (TRAP) ---
-on_error() {
-    echo "❌ DEPLOYMENT FAILED! Initiating Rollback..."
-    ssh "${REMOTE_USER}@${REMOTE_HOST}" "
-        if [ -d '${REMOTE_APP_PATH}/public/build_backup' ]; then
-            rm -rf '${REMOTE_APP_PATH}/public/build'
-            mv '${REMOTE_APP_PATH}/public/build_backup' '${REMOTE_APP_PATH}/public/build'
-        fi
-        cd ${REMOTE_APP_PATH} && php artisan up
-    "
-    exit 1
+# --- CLEANUP & ROLLBACK MECHANISM ---
+cleanup() {
+    local exit_code=$?
+    echo ""
+    if [ $exit_code -ne 0 ]; then
+        echo "❌ DEPLOYMENT FAILED! (Exit Code: $exit_code)"
+        echo "⚠️  Restoring old assets..."
+        ssh "${REMOTE_USER}@${REMOTE_HOST}" "
+            # Restore Public Build
+            if [ -d '${REMOTE_APP_PATH}/public/build_backup' ]; then
+                rm -rf '${REMOTE_APP_PATH}/public/build'
+                mv '${REMOTE_APP_PATH}/public/build_backup' '${REMOTE_APP_PATH}/public/build'
+            fi
+            # Restore SSR Build
+            if [ -d '${REMOTE_APP_PATH}/bootstrap/ssr_backup' ]; then
+                rm -rf '${REMOTE_APP_PATH}/bootstrap/ssr'
+                mv '${REMOTE_APP_PATH}/bootstrap/ssr_backup' '${REMOTE_APP_PATH}/bootstrap/ssr'
+            fi
+            echo '✅ Assets restored.'
+            echo '🔄 Emergency: Bringing site back online (Old Version)...'
+            cd ${REMOTE_APP_PATH} && php artisan up
+        "
+    else
+        echo "🔄 Reloading SSR Process & Cleaning up..."
+        ssh "${REMOTE_USER}@${REMOTE_HOST}" "
+             rm -rf ${REMOTE_APP_PATH}/public/build_backup
+             rm -rf ${REMOTE_APP_PATH}/bootstrap/ssr_backup
+             # Reload PM2
+             $PM2_PATH reload $SSR_PROCESS
+        "
+        echo "✅ DEPLOYMENT FINISHED SUCCESSFULLY!"
+    fi
 }
-trap 'on_error' ERR
+trap cleanup EXIT
 
-echo "--- Starting Deployment ---"
+echo "--- Starting Deployment Package ---"
 
+# --- STEP 1: PRE-FLIGHT ---
+echo "🔄 Ensuring Git is in sync..."
+git pull --rebase origin main
 
+# --- STEP 2: VERSIONING ---
 echo "📦 Select version bump? [patch (default) / minor / major / none]"
 read BUMP
 if [ -z "$BUMP" ]; then BUMP="patch"; fi
 
 if [ "$BUMP" != "none" ]; then
     echo "🔖 Bumping version ($BUMP)..."
+    # Bump version but don't commit yet
     npm version $BUMP --no-git-tag-version
     
-    echo "📸 Committing ALL changes (Code + Version)..."
-    git add .
-    git commit -m "chore: shipment release $(node -p "require('./package.json').version")"
+    NEW_VERSION=$(node -p "require('./package.json').version")
+    echo "✅ New Version is: $NEW_VERSION"
+
+    echo "📸 Committing Version Bump..."
+    git add package.json package-lock.json
+    git commit -m "chore: shipment release $NEW_VERSION"
 fi
 
+# --- STEP 3: LOCAL BUILD ---
 echo "🌍 Syncing Translations Locally..."
-if [ -z "$TRANSLATION_KEY" ]; then
+if [ -z "$TRANSLATION_KEY" ] || [ "$TRANSLATION_KEY" == "{{TRANSLATION_KEY}}" ]; then
     "$LOCAL_PHP_BIN" artisan translate:local --all || echo "⚠️ Translation command skipped (not found)"
 else
-    "$LOCAL_PHP_BIN" artisan translate:local --all --key="$TRANSLATION_KEY" || echo "⚠️ Translation command skipped (not found)"
+    "$LOCAL_PHP_BIN" artisan translate:local --all --key="$TRANSLATION_KEY"
 fi
 
 echo "🛠️  Building Assets (SSR Mode)..."
 export NODE_OPTIONS="--max-old-space-size=4096"
 npm run build:ssr
 
-echo "🛡️  Backing up remote assets..."
+# --- STEP 4: PREPARE SERVER ---
+echo "🛡️  Backing up remote assets & Maintenance Mode..."
 ssh "${REMOTE_USER}@${REMOTE_HOST}" "
-    # Turn off silent exit so we can see errors, handle them manually
-    set +e 
-     mkdir -p ${REMOTE_APP_PATH}/bootstrap/ssr
-    echo '📂 CD into: ${REMOTE_APP_PATH}'
-    cd ${REMOTE_APP_PATH} || { echo '❌ ERROR: Could not find directory!'; exit 1; }
+    # Remove old backups if they exist
+    rm -rf ${REMOTE_APP_PATH}/public/build_backup
+    rm -rf ${REMOTE_APP_PATH}/bootstrap/ssr_backup
 
-    echo '🧹 Cleaning old backup...'
-    rm -rf public/build_backup
-
-    echo '💾 Attempting backup...'
-    if [ -d 'public/build' ]; then
-        cp -r public/build public/build_backup
-        echo '✅ Backup created.'
-    else
-        echo '⚠️ public/build folder missing - nothing to backup (This is normal for first run).'
+    # Backup Public Build
+    if [ -d '${REMOTE_APP_PATH}/public/build' ]; then
+        cp -r ${REMOTE_APP_PATH}/public/build ${REMOTE_APP_PATH}/public/build_backup
+    fi
+    # Backup SSR Build
+    if [ -d '${REMOTE_APP_PATH}/bootstrap/ssr' ]; then
+        cp -r ${REMOTE_APP_PATH}/bootstrap/ssr ${REMOTE_APP_PATH}/bootstrap/ssr_backup
     fi
     
-    echo '🔄 Resetting Git...'
-    # We add || echo to see if it fails without stopping script
-    git reset --hard HEAD || echo '❌ Git Reset Failed'
-    git clean -fd || echo '❌ Git Clean Failed'
-
-    echo '🛑 Activating Maintenance Mode...'
-    php artisan down --render='errors::503' || echo '❌ Artisan command failed'
+    # Create SSR directory if missing
+    mkdir -p ${REMOTE_APP_PATH}/bootstrap/ssr
     
-    echo '✅ Step 3 Complete'
+    # Enter Maintenance Mode
+    cd ${REMOTE_APP_PATH} && php artisan down || true
 "
 
-# --- STEP 5: UPLOAD ASSETS ---
+# --- STEP 5: UPLOAD ASSETS (RSYNC/SCP) ---
 echo "📤 Uploading public/build to Server..."
+# Clean destination first to ensure no stale files
 ssh "${REMOTE_USER}@${REMOTE_HOST}" "rm -rf ${REMOTE_APP_PATH}/public/build/*"
 scp -r -C -p public/build/* "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_APP_PATH}/public/build/"
 
 echo "📤 Uploading bootstrap/ssr to Server..."
+# Clean destination
+ssh "${REMOTE_USER}@${REMOTE_HOST}" "rm -rf ${REMOTE_APP_PATH}/bootstrap/ssr/*"
 scp -r -C -p bootstrap/ssr/* "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_APP_PATH}/bootstrap/ssr/"
 
-# --- STEP 5: PUSH BACKEND & DEPLOY ---
+# --- STEP 6: PUSH BACKEND ---
 echo "💾 Pushing Laravel Backend Code..."
-git push origin main || echo "⚠️  Git had nothing new to push (Files are up to date)."
+git push origin main
 
-# --- STEP 7: FORCE EXECUTE DEPLOY ---
-echo "⚡ Forcing Remote Deployment Script..."
+# --- STEP 7: EXECUTE REMOTE DEPLOY ---
+echo "⚡ Executing Remote Deployment Script..."
 ssh "${REMOTE_USER}@${REMOTE_HOST}" "bash ${REMOTE_DEPLOY_SCRIPT}"
-
-# --- STEP 7: CLEANUP & RELOAD ---
-echo "🔄 Reloading SSR Process..."
-ssh "${REMOTE_USER}@${REMOTE_HOST}" "rm -rf ${REMOTE_APP_PATH}/public/build_backup && pm2 reload $SSR_PROCESS" 
-
-echo "✅ DEPLOYMENT SUCCESSFUL!"
