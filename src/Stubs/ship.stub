@@ -88,7 +88,7 @@ echo "🛡️  Backing up remote assets..."
 ssh "${REMOTE_USER}@${REMOTE_HOST}" "
     # Turn off silent exit so we can see errors, handle them manually
     set +e 
-
+     mkdir -p ${REMOTE_APP_PATH}/bootstrap/ssr
     echo '📂 CD into: ${REMOTE_APP_PATH}'
     cd ${REMOTE_APP_PATH} || { echo '❌ ERROR: Could not find directory!'; exit 1; }
 
@@ -118,6 +118,9 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" "
 echo "📤 Uploading public/build to Server..."
 ssh "${REMOTE_USER}@${REMOTE_HOST}" "rm -rf ${REMOTE_APP_PATH}/public/build/*"
 scp -r -C -p public/build/* "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_APP_PATH}/public/build/"
+
+echo "📤 Uploading bootstrap/ssr to Server..."
+scp -r -C -p bootstrap/ssr/* "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_APP_PATH}/bootstrap/ssr/"
 
 # --- STEP 5: PUSH BACKEND & DEPLOY ---
 echo "💾 Pushing Laravel Backend Code..."
